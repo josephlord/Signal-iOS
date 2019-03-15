@@ -1,101 +1,124 @@
-//  Created by Michael Kirk on 12/19/16.
-//  Copyright © 2016 Open Whisper Systems. All rights reserved.
+//
+//  Copyright (c) 2019 Open Whisper Systems. All rights reserved.
+//
 
 import Foundation
 import PromiseKit
+import SignalServiceKit
 
 @objc(OWSMessageFetcherJob)
-class MessageFetcherJob: NSObject {
+public class MessageFetcherJob: NSObject {
 
-    let TAG = "[MessageFetcherJob]"
-    var timer: Timer?
+    private var timer: Timer?
 
-    // MARK: injected dependencies
-    let networkManager: TSNetworkManager
-    let messagesManager: TSMessagesManager
-    let messageSender: MessageSender
-    let signalService: OWSSignalService
+    @objc
+    public override init() {
+        super.init()
 
-    var runPromises = [Double: Promise<Void>]()
-
-    init(messagesManager: TSMessagesManager, messageSender: MessageSender, networkManager: TSNetworkManager, signalService: OWSSignalService) {
-        self.messagesManager = messagesManager
-        self.networkManager = networkManager
-        self.messageSender = messageSender
-        self.signalService = signalService
+        SwiftSingletons.register(self)
     }
 
-    func runAsync() {
-        Logger.debug("\(TAG) \(#function)")
-        guard signalService.isCensored  else {
-            Logger.debug("\(self.TAG) delegating message fetching to SocketManager since we're using normal transport.")
-            TSSocketManager.becomeActive(fromBackgroundExpectMessage: true)
-            return
+    // MARK: Singletons
+
+    private var networkManager: TSNetworkManager {
+        return SSKEnvironment.shared.networkManager
+    }
+
+    private var messageReceiver: OWSMessageReceiver {
+        return SSKEnvironment.shared.messageReceiver
+    }
+
+    private var signalService: OWSSignalService {
+        return OWSSignalService.sharedInstance()
+    }
+
+    // MARK: 
+
+    @discardableResult
+    public func run() -> Promise<Void> {
+        Logger.debug("")
+
+        guard signalService.isCensorshipCircumventionActive else {
+            Logger.debug("delegating message fetching to SocketManager since we're using normal transport.")
+            TSSocketManager.shared.requestSocketOpen()
+            return Promise.value(())
         }
 
-        Logger.info("\(TAG) using fallback message fetching.")
+        Logger.info("fetching messages via REST.")
 
-        let promiseId = NSDate().timeIntervalSince1970
-        Logger.debug("\(self.TAG) starting promise: \(promiseId)")
-        let runPromise = self.fetchUndeliveredMessages().then { (envelopes: [OWSSignalServiceProtosEnvelope], more: Bool) -> () in
+        let promise = self.fetchUndeliveredMessages().then { (envelopes: [SSKProtoEnvelope], more: Bool) -> Promise<Void> in
             for envelope in envelopes {
-                Logger.info("\(self.TAG) received envelope.")
-                self.messagesManager.handleReceivedEnvelope(envelope);
-
+                Logger.info("received envelope.")
+                do {
+                    let envelopeData = try envelope.serializedData()
+                    self.messageReceiver.handleReceivedEnvelopeData(envelopeData)
+                } catch {
+                    owsFailDebug("failed to serialize envelope")
+                }
                 self.acknowledgeDelivery(envelope: envelope)
             }
+
             if more {
-                Logger.info("\(self.TAG) more messages, so recursing.")
-                // recurse
-                self.runAsync()
+                Logger.info("fetching more messages.")
+                return self.run()
+            } else {
+                // All finished
+                return Promise.value(())
             }
-        }.always {
-            Logger.debug("\(self.TAG) cleaning up promise: \(promiseId)")
-            self.runPromises[promiseId] = nil
         }
 
-        // maintain reference to make sure it's not de-alloced prematurely.
-        runPromises[promiseId] = runPromise
+        promise.retainUntilComplete()
+
+        return promise
+    }
+
+    @objc
+    @discardableResult
+    public func run() -> AnyPromise {
+        return AnyPromise(run() as Promise)
     }
 
     // use in DEBUG or wherever you can't receive push notifications to poll for messages.
     // Do not use in production.
-    func startRunLoop(timeInterval: Double) {
-        Logger.error("\(TAG) Starting message fetch polling. This should not be used in production.");
-        timer = Timer.scheduledTimer(timeInterval: timeInterval, target: self, selector: #selector(runAsync), userInfo: nil, repeats: true)
+    public func startRunLoop(timeInterval: Double) {
+        Logger.error("Starting message fetch polling. This should not be used in production.")
+        timer = WeakTimer.scheduledTimer(timeInterval: timeInterval, target: self, userInfo: nil, repeats: true) {[weak self] _ in
+            let _: Promise<Void>? = self?.run()
+            return
+        }
     }
 
-    func stopRunLoop() {
+    public func stopRunLoop() {
         timer?.invalidate()
         timer = nil
     }
 
-    func parseMessagesResponse(responseObject: Any?) -> (envelopes: [OWSSignalServiceProtosEnvelope], more: Bool)? {
+    private func parseMessagesResponse(responseObject: Any?) -> (envelopes: [SSKProtoEnvelope], more: Bool)? {
         guard let responseObject = responseObject else {
-            Logger.error("\(self.TAG) response object was surpringly nil")
+            Logger.error("response object was surpringly nil")
             return nil
         }
 
         guard let responseDict = responseObject as? [String: Any] else {
-            Logger.error("\(self.TAG) response object was not a dictionary")
+            Logger.error("response object was not a dictionary")
             return nil
         }
 
         guard let messageDicts = responseDict["messages"] as? [[String: Any]] else {
-            Logger.error("\(self.TAG) messages object was not a list of dictionaries")
+            Logger.error("messages object was not a list of dictionaries")
             return nil
         }
 
-        let moreMessages = { () -> Bool in 
+        let moreMessages = { () -> Bool in
             if let responseMore = responseDict["more"] as? Bool {
                 return responseMore
             } else {
-                Logger.warn("\(self.TAG) more object was not a bool. Assuming no more")
+                Logger.warn("more object was not a bool. Assuming no more")
                 return false
             }
         }()
 
-        let envelopes = messageDicts.map { buildEnvelope(messageDict: $0) }.filter { $0 != nil }.map { $0! }
+        let envelopes: [SSKProtoEnvelope] = messageDicts.compactMap { buildEnvelope(messageDict: $0) }
 
         return (
             envelopes: envelopes,
@@ -103,92 +126,92 @@ class MessageFetcherJob: NSObject {
         )
     }
 
-    func buildEnvelope(messageDict: [String: Any]) -> OWSSignalServiceProtosEnvelope? {
-        let builder = OWSSignalServiceProtosEnvelopeBuilder()
+    private func buildEnvelope(messageDict: [String: Any]) -> SSKProtoEnvelope? {
+        do {
+            let params = ParamParser(dictionary: messageDict)
 
-        guard let typeInt = messageDict["type"] as? Int32 else {
-            Logger.error("\(TAG) message body didn't have type")
-            return nil
-        }
+            let typeInt: Int32 = try params.required(key: "type")
+            guard let type: SSKProtoEnvelope.SSKProtoEnvelopeType = SSKProtoEnvelope.SSKProtoEnvelopeType(rawValue: typeInt) else {
+                Logger.error("`type` was invalid: \(typeInt)")
+                throw ParamParser.ParseError.invalidFormat("type")
+            }
 
-        guard let type = OWSSignalServiceProtosEnvelopeType(rawValue:typeInt) else {
-            Logger.error("\(TAG) message body type was invalid")
-            return nil
-        }
-        builder.setType(type)
+            guard let timestamp: UInt64 = try params.required(key: "timestamp") else {
+                Logger.error("`timestamp` was invalid: \(typeInt)")
+                throw ParamParser.ParseError.invalidFormat("timestamp")
+            }
 
-        if let relay = messageDict["relay"] as? String {
-            builder.setRelay(relay)
-        }
+            let builder = SSKProtoEnvelope.builder(type: type, timestamp: timestamp)
 
-        guard let timestamp = messageDict["timestamp"] as? UInt64 else {
-            Logger.error("\(TAG) message body didn't have timestamp")
-            return nil
-        }
-        builder.setTimestamp(timestamp)
+            if let source: String = try params.optional(key: "source") {
+                builder.setSource(source)
+            }
 
-        guard let source = messageDict["source"] as? String else {
-            Logger.error("\(TAG) message body didn't have source")
-            return nil
-        }
-        builder.setSource(source)
+            if let sourceDevice: UInt32 = try params.optional(key: "sourceDevice") {
+                builder.setSourceDevice(sourceDevice)
+            }
 
-        guard let sourceDevice = messageDict["sourceDevice"] as? UInt32 else {
-            Logger.error("\(TAG) message body didn't have sourceDevice")
-            return nil
-        }
-        builder.setSourceDevice(sourceDevice)
-
-        if let encodedLegacyMessage = messageDict["message"] as? String {
-            Logger.debug("\(TAG) message body had legacyMessage")
-            if let legacyMessage = Data(base64Encoded: encodedLegacyMessage) {
+            if let legacyMessage = try params.optionalBase64EncodedData(key: "message") {
                 builder.setLegacyMessage(legacyMessage)
             }
-        }
-
-        if let encodedContent = messageDict["content"] as? String {
-            Logger.debug("\(TAG) message body had content")
-            if let content = Data(base64Encoded: encodedContent) {
+            if let content = try params.optionalBase64EncodedData(key: "content") {
                 builder.setContent(content)
             }
-        }
+            if let serverTimestamp: UInt64 = try params.optional(key: "serverTimestamp") {
+                builder.setServerTimestamp(serverTimestamp)
+            }
+            if let serverGuid: String = try params.optional(key: "guid") {
+                builder.setServerGuid(serverGuid)
+            }
 
-        return builder.build()
+            return try builder.build()
+        } catch {
+            owsFailDebug("error building envelope: \(error)")
+            return nil
+        }
     }
 
-    func fetchUndeliveredMessages() -> Promise<(envelopes: [OWSSignalServiceProtosEnvelope], more: Bool)> {
-        return Promise { fulfill, reject in
-            let messagesRequest = OWSGetMessagesRequest()
-
+    private func fetchUndeliveredMessages() -> Promise<(envelopes: [SSKProtoEnvelope], more: Bool)> {
+        return Promise { resolver in
+            let request = OWSRequestFactory.getMessagesRequest()
             self.networkManager.makeRequest(
-                messagesRequest,
-                success: { (task: URLSessionDataTask?, responseObject: Any?) -> () in
+                request,
+                success: { (_: URLSessionDataTask?, responseObject: Any?) -> Void in
                     guard let (envelopes, more) = self.parseMessagesResponse(responseObject: responseObject) else {
-                        Logger.error("\(self.TAG) response object had unexpected content")
-                        return reject(OWSErrorMakeUnableToProcessServerResponseError())
+                        Logger.error("response object had unexpected content")
+                        return resolver.reject(OWSErrorMakeUnableToProcessServerResponseError())
                     }
 
-                    fulfill((envelopes: envelopes, more: more))
+                    resolver.fulfill((envelopes: envelopes, more: more))
                 },
-                failure: { (task: URLSessionDataTask?, error: Error?) in
+                failure: { (_: URLSessionDataTask?, error: Error?) in
                     guard let error = error else {
-                        Logger.error("\(self.TAG) error was surpringly nil. sheesh rough day.")
-                        return reject(OWSErrorMakeUnableToProcessServerResponseError())
+                        Logger.error("error was surpringly nil. sheesh rough day.")
+                        return resolver.reject(OWSErrorMakeUnableToProcessServerResponseError())
                     }
 
-                    reject(error)
+                    resolver.reject(error)
             })
         }
     }
 
-    func acknowledgeDelivery(envelope: OWSSignalServiceProtosEnvelope) {
-        let request = OWSAcknowledgeMessageDeliveryRequest(source: envelope.source, timestamp: envelope.timestamp)
+    private func acknowledgeDelivery(envelope: SSKProtoEnvelope) {
+        let request: TSRequest
+        if let serverGuid = envelope.serverGuid, serverGuid.count > 0 {
+            request = OWSRequestFactory.acknowledgeMessageDeliveryRequest(withServerGuid: serverGuid)
+        } else if let source = envelope.source, source.count > 0, envelope.timestamp > 0 {
+            request = OWSRequestFactory.acknowledgeMessageDeliveryRequest(withSource: source, timestamp: envelope.timestamp)
+        } else {
+            owsFailDebug("Cannot ACK message which has neither source, nor server GUID and timestamp.")
+            return
+        }
+
         self.networkManager.makeRequest(request,
-                                        success: { (task: URLSessionDataTask?, responseObject: Any?) -> () in
-                                            Logger.debug("\(self.TAG) acknowledged delivery for message at timestamp: \(envelope.timestamp)")
+                                        success: { (_: URLSessionDataTask?, _: Any?) -> Void in
+                                            Logger.debug("acknowledged delivery for message at timestamp: \(envelope.timestamp)")
         },
-                                        failure: { (task: URLSessionDataTask?, error: Error?) in
-                                            Logger.debug("\(self.TAG) acknowledging delivery for message at timestamp: \(envelope.timestamp) failed with error: \(error)")
+                                        failure: { (_: URLSessionDataTask?, error: Error?) in
+                                            Logger.debug("acknowledging delivery for message at timestamp: \(envelope.timestamp) failed with error: \(String(describing: error))")
         })
     }
 }

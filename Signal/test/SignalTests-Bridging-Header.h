@@ -1,7 +1,6 @@
 //
-//  Use this file to import your target's public headers that you would like to expose to Swift.
+//  Copyright (c) 2018 Open Whisper Systems. All rights reserved.
 //
+
 #import "Signal-Bridging-Header.h"
-#import "OWSMessagesBubblesSizeCalculator.h"
-#import <JSQMessagesViewController/JSQMessageData.h>
-#import <JSQMessagesViewController/JSQMessagesCollectionViewFlowLayout.h>
+#import "SignalBaseTest.h"

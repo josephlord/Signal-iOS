@@ -1,48 +1,79 @@
-## Building
+# Building
 
-1) Clone the repo to a working directory
+We typically develop against the latest stable version of Xcode.
 
-2) [CocoaPods](http://cocoapods.org) is used to manage dependencies. Pods are setup easily and are distributed via a ruby gem. Follow the simple instructions on the website to setup. After setup, run the following command from the toplevel directory of Signal-iOS to download the dependencies for Signal-iOS:
+As of this writing, that's Xcode 10.1
+
+## Prerequistes
+
+Install [Carthage](https://github.com/Carthage/Carthage#installing-carthage)
+
+## 1. Clone
+
+Clone the repo to a working directory:
 
 ```
-pod install
-```
-If you are having build issues, first make sure your pods are up to date
-```
-pod update
-pod install
-```
-occasionally, CocoaPods itself will need to be updated. Do this with
-```
-sudo gem update
-```
-
-3) Some dependencies are added via carthage. Run:
-```
-carthage update
-```
-If you don't have carthage, here are install instructions:
-```
-https://github.com/Carthage/Carthage#installing-carthage
+git clone --recurse-submodules https://github.com/signalapp/Signal-iOS
 ```
 
-4) Open the `Signal.xcworkspace` in Xcode.
+Since we make use of submodules, you must use `git clone`, rather than
+downloading a prepared zip file from Github.
+
+We recommend you fork the repo on GitHub, then clone your fork:
+
+```
+git clone --recurse-submodules https://github.com/<USERNAME>/Signal-iOS.git
+```
+
+You can then add the Signal repo to sync with upstream changes:
+
+```
+git remote add upstream https://github.com/signalapp/Signal-iOS
+```
+
+## 2. Dependencies
+
+To build and configure the libraries Signal uses, just run:
+
+```
+make dependencies
+```
+
+### Building WebRTC
+
+A prebuilt version of WebRTC.framework resides in a submodule and should be
+installed by the above steps.  However, if you'd like to build it from source,
+see: https://github.com/signalapp/signal-webrtc-ios
+
+## 3. Xcode
+
+Open the `Signal.xcworkspace` in Xcode.
 
 ```
 open Signal.xcworkspace
 ```
 
-5) In the Signal target on the General tab, change the Team drop down to your own. On the Capabilities tab turn off Push Notifications and Data Protection. Only Background Modes should remain on.
+In the TARGETS area of the General tab, change the Team drop down to
+your own. You will need to do that for all the listed targets, for ex. 
+Signal, SignalShareExtension, and SignalMessaging. You will need an Apple
+Developer account for this. 
 
-6) Some of our build scripts, like running tests, expect your Derived
-Data directory to be `$(PROJECT_DIR)/build`. In Xcode, go to `Preferences-> Locations`,
-and set the "Derived Data" dropdown to "Relative" and the text field
-value to "build".
+On the Capabilities tab, turn off Push Notifications and Data Protection,
+while keeping Background Modes on. The App Groups capability will need to
+remain on in order to access the shared data storage. The App ID needs to
+match the SignalApplicationGroup string set in TSConstants.h. 
 
-7) Build and Run and you are ready to go!
+If you wish to test the Documents API, the iCloud capability will need to
+be on with the iCloud Documents option selected.
+
+Build and Run and you are ready to go!
 
 ## Known issues
 
-Features related to push notifications are known to be not working for third-party contributors since Apple's Push Notification service pushs will only work with Open Whisper Systems production code signing certificate.
+Features related to push notifications are known to be not working for
+third-party contributors since Apple's Push Notification service pushes
+will only work with Open Whisper Systems production code signing
+certificate.
 
+If you have any other issues, please ask on the [community forum](https://whispersystems.discoursehosting.net/).
 

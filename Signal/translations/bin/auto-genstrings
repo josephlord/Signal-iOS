@@ -1,11 +1,22 @@
-#!/bin/bash
-TARGETS="Signal/src ../SignalServiceKit/src"
-TMP="$(mktemp -d)"
-STRINGFILE="Signal/translations/en.lproj/Localizable.strings"
+#!/usr/bin/env bash
+
+set -e
 
 BIN_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 REPO_ROOT=$BIN_DIR/../../..
 cd $REPO_ROOT
+
+SSK_DIR="./SignalServiceKit/src"
+SAE_DIR="./SignalShareExtension"
+SM_DIR="./SignalMessaging"
+SCK_DIR="../SignalCoreKit"
+
+TARGETS="Signal/src ${SSK_DIR} ${SAE_DIR} ${SM_DIR} ${SCK_DIR}"
+TMP="$(mktemp -d)"
+STRINGFILE="Signal/translations/en.lproj/Localizable.strings"
+
+# Assert preconditions before we do any work
+# We're more likely to notice errors this way
 
 for TARGET_DIR in $TARGETS
 do
@@ -16,6 +27,8 @@ if [ ! -d $TARGET_DIR ]; then
 fi
 
 done
+
+# Now that we've check all our pre-conditions, proceed with the work.
 
 # Search directories for .m & .h files and collect string definitions with genstrings
 find $TARGETS -name "*.m" -print0 -o -name "*.h" -print0 -o -name "*.swift" -print0 | xargs -0 genstrings -o $TMP
@@ -39,3 +52,4 @@ echo "$OLDUTF8" | grep -Eo '^".*"' | \
 		if($2 ~ /"[;]*$/){$2 = " = "$2}; \
 		if($2 ~ /"$/){$2 = $2";"}; \
 		print}' - <(echo "$NEWUTF8") > $STRINGFILE
+

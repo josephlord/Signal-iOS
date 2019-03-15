@@ -1,24 +1,34 @@
-//  Created by Michael Kirk on 10/26/16.
-//  Copyright © 2016 Open Whisper Systems. All rights reserved.
+//
+//  Copyright (c) 2018 Open Whisper Systems. All rights reserved.
+//
 
 import XCTest
 import PromiseKit
+import SignalServiceKit
+@testable import Signal
 
-struct VerificationFailedError : Error { }
-struct FailedToGetRPRegistrationTokenError : Error { }
-struct FailedToRegisterWithRedphoneError : Error { }
+struct VerificationFailedError: Error { }
+struct FailedToGetRPRegistrationTokenError: Error { }
 
-enum PushNotificationRequestResult : String {
+enum PushNotificationRequestResult: String {
     case FailTSOnly = "FailTSOnly",
     FailRPOnly = "FailRPOnly",
     FailBoth = "FailBoth",
     Succeed = "Succeed"
 }
 
-class FailingTSAccountManager : TSAccountManager {
-    let phoneNumberAwaitingVerification = "+13235555555"
+class FailingTSAccountManager: TSAccountManager {
+    override public init(primaryStorage: OWSPrimaryStorage) {
+        AssertIsOnMainThread()
 
-    override func verifyAccount(withCode: String, success: @escaping () -> Void, failure: @escaping (Error) -> Void) -> Void {
+        super.init(primaryStorage: primaryStorage)
+
+        self.phoneNumberAwaitingVerification = "+13235555555"
+    }
+
+    override func verifyAccount(withCode: String,
+                                pin: String?,
+                                success: @escaping () -> Void, failure: @escaping (Error) -> Void) {
         failure(VerificationFailedError())
     }
 
@@ -31,60 +41,49 @@ class FailingTSAccountManager : TSAccountManager {
     }
 }
 
-class VerifyingTSAccountManager : FailingTSAccountManager {
-    override func verifyAccount(withCode: String, success: @escaping () -> Void, failure: @escaping (Error) -> Void) -> Void {
+class VerifyingTSAccountManager: FailingTSAccountManager {
+    override func verifyAccount(withCode: String,
+                                pin: String?,
+                                success: @escaping () -> Void, failure: @escaping (Error) -> Void) {
         success()
     }
 
-    override func obtainRPRegistrationToken(success: @escaping (String) -> Void, failure failureBlock: @escaping (Error) -> Void) {
-        failureBlock(FailedToGetRPRegistrationTokenError())
+    override func performUpdateAccountAttributes() -> AnyPromise {
+        return AnyPromise(Promise.value(()))
     }
 }
 
-class TokenObtainingTSAccountManager : VerifyingTSAccountManager {
-    override func obtainRPRegistrationToken(success: @escaping (String) -> Void, failure failureBlock: @escaping (Error) -> Void) {
-        success("fakeRegistrationToken")
+class TokenObtainingTSAccountManager: VerifyingTSAccountManager {
+}
+
+class VerifyingPushRegistrationManager: PushRegistrationManager {
+    public override func requestPushTokens() -> Promise<(pushToken: String, voipToken: String)> {
+        return Promise.value(("a", "b"))
     }
 }
 
-class FailingRPAccountManager : RPAccountManager {
-    override func register(withTsToken tsToken: String, success: @escaping () -> Void, failure: @escaping (Error) -> Void) {
-        failure(FailedToRegisterWithRedphoneError());
-    }
-}
+class AccountManagerTest: SignalBaseTest {
 
-class SuccessfulRPAccountManager : RPAccountManager {
-    override func register(withTsToken tsToken: String, success: @escaping () -> Void, failure: @escaping (Error) -> Void) {
-        if tsToken == "fakeRegistrationToken" {
-            success()
-        } else {
-            XCTFail("Unexpected registration token:\(tsToken)")
-        }
+    override func setUp() {
+        super.setUp()
+
+        let tsAccountManager = FailingTSAccountManager(primaryStorage: OWSPrimaryStorage.shared())
+        let sskEnvironment = SSKEnvironment.shared as! MockSSKEnvironment
+        sskEnvironment.tsAccountManager = tsAccountManager
     }
 
-    override func registerForPushNotifications(pushToken: String, voipToken: String, success successHandler: @escaping () -> Void, failure failureHandler: @escaping (Error) -> Void) {
-        if pushToken == PushNotificationRequestResult.FailRPOnly.rawValue || pushToken == PushNotificationRequestResult.FailBoth.rawValue {
-            failureHandler(OWSErrorMakeUnableToProcessServerResponseError())
-        } else {
-            successHandler()
-        }
+    override func tearDown() {
+        super.tearDown()
     }
-}
-
-class AccountManagerTest: XCTestCase {
-
-    let tsAccountManager = FailingTSAccountManager()
-    let rpAccountManager = FailingRPAccountManager()
 
     func testRegisterWhenEmptyCode() {
-        let accountManager = AccountManager(textSecureAccountManager: tsAccountManager,
-                                            redPhoneAccountManager: rpAccountManager)
+        let accountManager = AccountManager()
 
         let expectation = self.expectation(description: "should fail")
 
         firstly {
-            accountManager.register(verificationCode: "")
-        }.then {
+            accountManager.register(verificationCode: "", pin: "")
+        }.done {
             XCTFail("Should fail")
         }.catch { error in
             let nserror = error as NSError
@@ -93,20 +92,19 @@ class AccountManagerTest: XCTestCase {
             } else {
                 XCTFail("Unexpected error: \(error)")
             }
-        }
+        }.retainUntilComplete()
 
         self.waitForExpectations(timeout: 1.0, handler: nil)
     }
 
     func testRegisterWhenVerificationFails() {
-        let accountManager = AccountManager(textSecureAccountManager: tsAccountManager,
-                                            redPhoneAccountManager: rpAccountManager)
+        let accountManager = AccountManager()
 
         let expectation = self.expectation(description: "should fail")
 
         firstly {
-            accountManager.register(verificationCode: "123456")
-        }.then {
+            accountManager.register(verificationCode: "123456", pin: "")
+        }.done {
             XCTFail("Should fail")
         }.catch { error in
             if error is VerificationFailedError {
@@ -114,89 +112,46 @@ class AccountManagerTest: XCTestCase {
             } else {
                 XCTFail("Unexpected error: \(error)")
             }
-        }
-
-        self.waitForExpectations(timeout: 1.0, handler: nil)
-    }
-
-    func testObtainingTokenFails() {
-        let tsAccountManager = VerifyingTSAccountManager()
-        let accountManager = AccountManager(textSecureAccountManager: tsAccountManager,
-                                            redPhoneAccountManager: rpAccountManager)
-
-        let expectation = self.expectation(description: "should fail")
-
-        firstly {
-            accountManager.register(verificationCode: "123456")
-        }.then {
-            XCTFail("Should fail")
-        }.catch { error in
-            if error is FailedToGetRPRegistrationTokenError {
-                expectation.fulfill()
-            } else {
-                XCTFail("Unexpected error: \(error)")
-            }
-        }
-
-        self.waitForExpectations(timeout: 1.0, handler: nil)
-    }
-
-    func testRedPhoneRegistrationFails() {
-        let tsAccountManager = TokenObtainingTSAccountManager()
-        let rpAccountManager = FailingRPAccountManager()
-        let accountManager = AccountManager(textSecureAccountManager: tsAccountManager,
-                                            redPhoneAccountManager: rpAccountManager)
-
-        let expectation = self.expectation(description: "should fail")
-
-        firstly {
-            accountManager.register(verificationCode: "123456")
-        }.then {
-            XCTFail("Should fail")
-        }.catch { error in
-            if error is FailedToRegisterWithRedphoneError {
-                expectation.fulfill()
-            } else {
-                XCTFail("Unexpected error: \(error)")
-            }
-        }
+        }.retainUntilComplete()
 
         self.waitForExpectations(timeout: 1.0, handler: nil)
     }
 
     func testSuccessfulRegistration() {
-        let tsAccountManager = TokenObtainingTSAccountManager()
-        let rpAccountManager = SuccessfulRPAccountManager()
-        let accountManager = AccountManager(textSecureAccountManager: tsAccountManager,
-                                            redPhoneAccountManager: rpAccountManager)
+        let tsAccountManager = TokenObtainingTSAccountManager(primaryStorage: OWSPrimaryStorage.shared())
+        let sskEnvironment = SSKEnvironment.shared as! MockSSKEnvironment
+        sskEnvironment.tsAccountManager = tsAccountManager
+
+        AppEnvironment.shared.pushRegistrationManager = VerifyingPushRegistrationManager()
+
+        let accountManager = AccountManager()
 
         let expectation = self.expectation(description: "should succeed")
 
         firstly {
-            accountManager.register(verificationCode: "123456")
-        }.then {
+            accountManager.register(verificationCode: "123456", pin: "")
+        }.done {
             expectation.fulfill()
         }.catch { error in
             XCTFail("Unexpected error: \(error)")
-        }
-        
+        }.retainUntilComplete()
+
         self.waitForExpectations(timeout: 1.0, handler: nil)
     }
 
     func testUpdatePushTokens() {
-        let accountManager = AccountManager(textSecureAccountManager: tsAccountManager,
-                                            redPhoneAccountManager: rpAccountManager)
-
+        let accountManager = AccountManager()
 
         let expectation = self.expectation(description: "should fail")
 
-        accountManager.updatePushTokens(pushToken: PushNotificationRequestResult.FailTSOnly.rawValue, voipToken: "whatever").then {
+        firstly {
+            accountManager.updatePushTokens(pushToken: PushNotificationRequestResult.FailTSOnly.rawValue, voipToken: "whatever")
+        }.done {
             XCTFail("Expected to fail.")
-        }.catch { error in
+        }.catch { _ in
             expectation.fulfill()
-        }
+        }.retainUntilComplete()
 
         self.waitForExpectations(timeout: 1.0, handler: nil)
     }
-
 }

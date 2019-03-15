@@ -1,24 +1,26 @@
-//  Created by Michael Kirk on 11/15/16.
-//  Copyright © 2016 Open Whisper Systems. All rights reserved.
+//
+//  Copyright (c) 2019 Open Whisper Systems. All rights reserved.
+//
 
 import Foundation
+import SignalServiceKit
 
 let CompareSafetyNumbersActivityType = "org.whispersystems.signal.activity.CompareSafetyNumbers"
 
 @objc(OWSCompareSafetyNumbersActivityDelegate)
 protocol CompareSafetyNumbersActivityDelegate {
-    func compareSafetyNumbersActivitySucceeded(activity: CompareSafetyNumbersActivity) -> Void;
-    func compareSafetyNumbersActivity(_ activity: CompareSafetyNumbersActivity, failedWithError error: Error) -> Void;
+    func compareSafetyNumbersActivitySucceeded(activity: CompareSafetyNumbersActivity)
+    func compareSafetyNumbersActivity(_ activity: CompareSafetyNumbersActivity, failedWithError error: Error)
 }
 
 @objc (OWSCompareSafetyNumbersActivity)
 class CompareSafetyNumbersActivity: UIActivity {
 
-    let TAG = "[CompareSafetyNumbersActivity]"
     var mySafetyNumbers: String?
     let delegate: CompareSafetyNumbersActivityDelegate
 
-    required init(delegate:CompareSafetyNumbersActivityDelegate) {
+    @objc
+    required init(delegate: CompareSafetyNumbersActivityDelegate) {
         self.delegate = delegate
         super.init()
     }
@@ -46,7 +48,7 @@ class CompareSafetyNumbersActivity: UIActivity {
     }
 
     override func canPerform(withActivityItems activityItems: [Any]) -> Bool {
-        return stringsFrom(activityItems:activityItems).count > 0
+        return stringsFrom(activityItems: activityItems).count > 0
     }
 
     override func prepare(withActivityItems activityItems: [Any]) {
@@ -58,8 +60,8 @@ class CompareSafetyNumbersActivity: UIActivity {
         defer { activityDidFinish(true) }
 
         let pasteboardString = numericOnly(string: UIPasteboard.general.string)
-        guard (pasteboardString != nil && pasteboardString!.characters.count == 60) else {
-            Logger.warn("\(TAG) no valid safety numbers found in pasteboard: \(pasteboardString)")
+        guard (pasteboardString != nil && pasteboardString!.count == 60) else {
+            Logger.warn("no valid safety numbers found in pasteboard: \(String(describing: pasteboardString))")
             let error = OWSErrorWithCodeDescription(OWSErrorCode.userError,
                                                     NSLocalizedString("PRIVACY_VERIFICATION_FAILED_NO_SAFETY_NUMBERS_IN_CLIPBOARD", comment: "Alert body for user error"))
 
@@ -70,10 +72,10 @@ class CompareSafetyNumbersActivity: UIActivity {
         let pasteboardSafetyNumbers = pasteboardString!
 
         if pasteboardSafetyNumbers == mySafetyNumbers {
-            Logger.info("\(TAG) successfully matched safety numbers. local numbers: \(mySafetyNumbers) pasteboard:\(pasteboardSafetyNumbers)")
-            delegate.compareSafetyNumbersActivitySucceeded(activity:self)
+            Logger.info("successfully matched safety numbers. local numbers: \(String(describing: mySafetyNumbers)) pasteboard:\(pasteboardSafetyNumbers)")
+            delegate.compareSafetyNumbersActivitySucceeded(activity: self)
         } else {
-            Logger.warn("\(TAG) local numbers: \(mySafetyNumbers) didn't match pasteboard:\(pasteboardSafetyNumbers)")
+            Logger.warn("local numbers: \(String(describing: mySafetyNumbers)) didn't match pasteboard:\(pasteboardSafetyNumbers)")
             let error = OWSErrorWithCodeDescription(OWSErrorCode.privacyVerificationFailure,
                                                     NSLocalizedString("PRIVACY_VERIFICATION_FAILED_MISMATCHED_SAFETY_NUMBERS_IN_CLIPBOARD", comment: "Alert body"))
             delegate.compareSafetyNumbersActivity(self, failedWithError: error)
@@ -83,13 +85,13 @@ class CompareSafetyNumbersActivity: UIActivity {
     // MARK: Helpers
 
     func numericOnly(string: String?) -> String? {
-        guard (string != nil) else {
+        guard let string = string else {
             return nil
         }
 
         var numericOnly: String?
         if let regex = try? NSRegularExpression(pattern: "\\D", options: .caseInsensitive) {
-            numericOnly = regex.stringByReplacingMatches(in: string!, options: .withTransparentBounds, range: NSMakeRange(0, string!.characters.count), withTemplate: "")
+            numericOnly = regex.stringByReplacingMatches(in: string, options: .withTransparentBounds, range: NSRange(location: 0, length: string.utf16.count), withTemplate: "")
         }
 
         return numericOnly
